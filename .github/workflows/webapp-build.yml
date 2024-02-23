@@ -1,0 +1,90 @@
+name: Java Spring-Boot WebApp Build
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    env:
+      DB_HOST: localhost
+      DB_PORT: 3306
+      DB_USER: root
+      DB_PASS: root
+      DB_NAME: webapp
+      AWS_ACCESS_KEY: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      TOPIC_ARN: ${{ secrets.TOPIC_ARN }}
+      
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v3
+
+    - name: Set up Java
+      uses: actions/setup-java@v3
+      with:
+        java-version: '17'
+        distribution: 'adopt'
+        cache: maven
+        
+    - name: Verify Java
+      run: java -version
+
+    - name: Verify Maven
+      run: mvn -version
+
+    - name: Install MySQL
+      run: |
+        sudo service mysql stop
+        sudo apt-get update
+
+    - name: Setup MariaDB
+      uses: getong/mariadb-action@v1.1
+      with:
+        host port: 3306
+        mysql database: webapp
+        mysql root password: root
+
+    - name: Build with Maven
+      run: mvn clean install -B
+
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ secrets.AWS_REGION }}
+        profile: dev
+  
+    - name: Install packer
+      run: |
+        wget -O- https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+        echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
+        sudo apt update && sudo apt install packer
+    
+    - name: Check packer version
+      run: packer --version
+
+    - name: Packer init
+      run: packer init ./packer/.
+
+    - name: Packer Build
+      run: packer build ./packer/webapp.pkr.hcl
+    
+    - name: Find Latest AMI
+      run: |
+        image_id = $(aws ec2 describe-images --owners ${{ secrets.OWNER }} --filters "Name=name,Values=amzn2-ami-hvm-*-x86_64-gp2" "Name=state,Values=available" --query 'Images | sort_by(@, &CreationDate) | [-1].ImageId' --region ${{ secrets.AWS_REGION }})
+        echo $image_id
+
+        lt_version = $(aws ec2 create-launch-template-version --launch-template-id ${{ secrets.LAUNCH_TEMP_ID }} --source-version ${{ secrets.LAUNCH_TEMP_VERSION }} --launch-template-data "{\"ImageId\":$image_id}")
+        version_number = $(echo $lt_version | jq -r '.LaunchTemplateVersion.VersionNumber')
+        echo $lt_version
+        echo $version_number
+
+        aws ec2 modify-launch-template --launch-template-id ${{vars.LAUNCH_TEMP_ID}} --default-version $version_number --region ${{secrets.AWS_REGION}}
+
+        aws autoscaling start-instance-refresh --auto-scaling-group-name ${{vars.AUTO_SCALING_GROUP_NAME}} --preferences "{\"InstanceWarmup\":180,\"MinHealthyPercentage\":100}" --strategy Rolling
+        sleep 20

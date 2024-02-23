@@ -1,0 +1,93 @@
+name: Java Spring-Boot WebApp Validations
+
+on:
+  pull_request:
+    branches:
+      - main
+  
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    env:
+      DB_HOST: localhost
+      DB_PORT: 3306
+      DB_USER: root
+      DB_PASS: root
+      DB_NAME: webapp
+      AWS_ACCESS_KEY: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      TOPIC_ARN: ${{ secrets.TOPIC_ARN }}
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v3
+      
+    - name: Set up Java
+      uses: actions/setup-java@v3
+      with:
+        java-version: '17'
+        distribution: 'adopt'
+        cache: maven
+        
+    - name: Verify Java
+      run: java -version
+
+    - name: Verify Maven
+      run: mvn -version
+
+    - name: Install MySQL
+      run: |
+        sudo service mysql stop
+        sudo apt-get update
+
+    - name: Setup MariaDB
+      uses: getong/mariadb-action@v1.1
+      with:
+        host port: 3306
+        mysql database: webapp
+        mysql root password: root
+
+    - name: Build with Maven
+      run: mvn clean install -B
+
+    - name: Upload Test Results
+      uses: actions/upload-artifact@v2
+      with:
+        name: test-results
+        path: target/surefire-reports
+
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ secrets.AWS_REGION }}
+        profile: dev
+
+    - name: Install packer
+      run: |
+        wget -O- https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+        echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
+        sudo apt update && sudo apt install packer
+      
+    - name: Check packer version
+      run: packer --version
+
+    - name: Packer init
+      run: packer init ./packer/.
+
+    - name: Run packer fmt
+      run: |
+        packer fmt ./packer/.
+        if ! git diff --quiet; then
+          echo "Error: Packer template formatting check failed. Please run 'packer fmt' and commit the changes."
+          exit 1
+        fi
+    
+    - name: Packer validate
+      run: packer validate ./packer/webapp.pkr.hcl
