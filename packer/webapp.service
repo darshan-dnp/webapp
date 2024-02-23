@@ -1,0 +1,18 @@
+[Unit]
+Description=webapp service
+Requires=network.target remote-fs.target
+After=network.target remote-fs.target
+
+[Service]
+Type=simple
+User=admin
+WorkingDirectory=/home/admin/
+EnvironmentFile=/opt/webapp/.env
+ExecStart=/opt/java/jdk-17.0.9/bin/java -jar /home/admin/webapp-0.0.1-SNAPSHOT.jar
+StandardOutput=append:/home/admin/logs/webapp.log
+StandardError=append:/home/admin/logs/webapp.log
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
